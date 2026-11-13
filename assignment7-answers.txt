@@ -64,7 +64,7 @@ The tests cover no token, bad signature, expiry, non-Bearer authorization, gener
 
 5. Controlled broken-policy evidence: temporarily changing `canAccessOrder` to return `true` caused the cross-branch order test to receive 200 instead of 404 and the branch-scoped order-list test to return all 4 orders instead of 2. The other 14 tests passed during the intentionally broken run. After restoring the policy, `npm test` passed all 16 tests (1 suite passed).
 
-6. .github/workflows/test.yml runs npm ci and npm test on every push and pull request with permissions: contents: read. Tests set a long fictional signing key in process.env before loading config, so no real secret or GitHub Actions secret is required. Green Actions URL: [replace after pushing].
+6. .github/workflows/test.yml runs npm ci and npm test on every push and pull request with permissions: contents: read. Tests set a long fictional signing key in process.env before loading config, so no real secret or GitHub Actions secret is required. Green Actions URL: https://github.com/endamlakdelelegn/devsecops-access-control/actions/runs/43485562372
 
 TASK 5 — SECRETS MANAGEMENT
 
