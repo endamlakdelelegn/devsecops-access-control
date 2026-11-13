@@ -1,0 +1,23 @@
+{
+  "name": "devsecops-access-control",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DineDesk API for Assignment 7",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "jest --runInBand"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  }
+}

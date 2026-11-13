@@ -1,0 +1,103 @@
+ASSIGNMENT SEVEN — Securing Access and Secrets in the DineDesk API
+
+Repository: https://github.com/endamlakdelelegn/devsecops-access-control
+
+TASK 1 — CONCEPTS
+
+1. Authentication proves who a requester is, for example by verifying a signed token. Authorization decides what that verified requester may do. A request with no valid Bearer token receives 401 because identity has not been established; a verified waiter requesting /api/admin/users receives 403 because the waiter is authenticated but lacks the required authority.
+
+2(a). A JWT has a base64url-encoded header, payload, and signature. The header identifies metadata such as the signing algorithm; the payload contains claims; the signature lets the server detect modification and validate the sender's signing key.
+
+2(b). Normal signed JWT payloads are not encrypted, so anyone holding the token can decode them. They must not contain passwords, password hashes, API keys, or other sensitive information.
+
+2(c). The server verifies the signature and algorithm allowlist, otherwise an attacker could alter claims or exploit an unexpected algorithm. It verifies expiry, otherwise a stolen old token remains usable. It verifies issuer, otherwise a token minted by another service could be accepted. It verifies audience, otherwise a token intended for a different application could be replayed against DineDesk. It also confirms the subject maps to an active current user, preventing deleted or disabled accounts from continuing access.
+
+3(a). “Sign in with Google” uses both OAuth 2.0 and OpenID Connect (OIDC). OAuth 2.0 is delegated authorization for access tokens, while OIDC adds an identity layer and an ID token so DineDesk can authenticate the staff member.
+
+3(b). The React application should use Authorization Code Flow with PKCE. PKCE binds the authorization request to the client that started it, so an intercepted authorization code cannot be exchanged by an attacker without the original verifier.
+
+4. Managers and administrators should use a phishing-resistant FIDO2/WebAuthn security key or platform passkey, with a recovery process using pre-generated recovery codes stored safely and a verified help-desk identity process. The three factor types are something you know (password/PIN), something you have (security key/phone), and something you are (biometric). SMS alone is weak because of SIM swapping, interception, and social engineering. A phishing-resistant factor cryptographically binds authentication to the real site origin, so a copied password or code cannot simply be replayed on a lookalike site.
+
+5. With a 30-day JWT and no server-side revocation check, a dismissed cashier can still make every request their old role permits until the token expires, potentially until 10:00 thirty days later. Use access tokens of about 15 minutes plus refresh tokens stored and revoked server-side; disable the user account immediately on dismissal. Each request should load the current user or check a revocation/session record, so an inactive account is rejected even if its token signature is valid. Revoke all refresh tokens and active sessions at dismissal, audit the action, and rotate any credentials the employee handled.
+
+TASK 2 — REVIEW OF THE OLD CODE
+
+| Location | Flaw and failed question | Impact | Fix |
+| --- | --- | --- | --- |
+| config.js: hardcoded JWT_SECRET | Credentials are in source (are credentials protected?). | Anyone with repository access can forge tokens. | Read it from environment/secrets manager, rotate it, and remove it from history. |
+| config.js: DATABASE_URL with password | Database credential is committed (are credentials protected?). | A reader can connect as the privileged database account. | Rotate it and use environment-provided least-privilege credentials. |
+| server.js: console.log config | It logs all configuration (are credentials protected?). | Logs can disclose the JWT and database password. | Log non-sensitive startup metadata only. |
+| login JWT payload: passwordHash | Password hash is put in every bearer token (are credentials protected?). | Token theft exposes password hashes for offline cracking. | Put only a minimal subject claim in the token. |
+| login JWT payload: email/role/branch | It exposes unnecessary staff data (are credentials protected?). | Token disclosure leaks internal identity and authorization details. | Keep claims minimal and load authorization data server-side. |
+| login expiresIn: 30d | Token lifetime is excessive (who are you?). | A dismissed or compromised employee keeps access for up to 30 days. | Use short access tokens plus revocable sessions/refresh tokens. |
+| authenticate: jwt.decode | Decode does not verify signature (who are you?). | An attacker can forge arbitrary claims in a token. | Use jwt.verify with a fixed algorithm, issuer, audience, and expiry validation. |
+| authenticate: x-user-role | A client-controlled header overwrites the role (what can you do?). | A waiter can claim admin and reach privileged routes. | Derive role only from a verified identity and trusted user record. |
+| authenticate returns 403 for invalid token | It confuses missing/invalid identity with authorization (who are you?). | Clients and monitoring receive misleading access-control semantics. | Return 401 for missing, malformed, expired, or invalid credentials. |
+| GET /orders/:id | It has no object/branch authorization (what can you do?). | Staff can read orders in another branch by changing the ID. | Apply one branch policy to every returned order. |
+| GET /reports/branch query branchId | It trusts a client-selected branch (what can you do?). | Piassa staff can retrieve Bole reports. | Use the verified user’s branch, ignoring query input. |
+| DELETE /admin/users/:id | Front-end hiding is not server authorization (what can you do?). | Any authenticated caller can delete users directly. | Require an admin role/permission on the route. |
+| VITE_PAYMENT_SECRET_KEY | VITE values are bundled into browser code (are credentials protected?). | Customers can extract the provider secret from the client bundle. | Keep provider secret server-side; expose only a publishable key/client secret when appropriate. |
+| deploy.yml permissions: write-all | Workflow has far more authority than needed (what can you do?). | A compromised action can modify repository or other writable resources. | Set least-privilege job/workflow permissions, normally contents: read. |
+| deploy.yml @main and token argument | Unpinned third-party code and a plaintext deployment token are used (are credentials protected?). | Upstream takeover or logs/process inspection can expose credentials and run malicious code. | Pin actions to reviewed commit SHAs and pass a GitHub secret only to the required trusted step. |
+| .env listed by git ls-files | A real local secret file is already tracked (are credentials protected?). | Every clone and repository history can contain its secrets. | Rotate values, remove it from tracking/history as appropriate, and retain .env in .gitignore. |
+
+3. The unverified jwt.decode plus the x-user-role override is the most immediately dangerous combination because a remote unauthenticated attacker can create a token-shaped value and claim administrator privileges. That can expose every branch, reports, and user-management actions without first stealing a real credential. The hardcoded database credential is also severe, but it requires repository or log access; the authentication flaw can be exercised directly against the API.
+
+TASK 3 — ROLE- AND PERMISSION-BASED ACCESS CONTROL
+
+1-5. The implementation is in devsecops-access-control/. Seed data has waiters, cashiers, and managers for Bole and Piassa plus an unscoped admin and four cross-branch orders. It stores only bcrypt hashes. Login uses bcrypt.compare and returns the same 401 response for an unknown email and wrong password. Tokens have only sub plus standard issuer, audience, expiry, and algorithm metadata; roles and branch IDs sent by clients are ignored.
+
+authenticate accepts only Bearer tokens and uses jwt.verify with HS256, issuer, and audience checks. It reads the user’s current role and branch from trusted seed data and rejects missing, invalid, expired, unknown, or inactive users with 401. The permissions table is: waiter orders:create/orders:read; cashier orders:read/payments:create; manager orders:read/reports:read; admin users:manage/orders:read/reports:read. Any unrecognised role has no permissions.
+
+6. Routes check named permissions because a permission describes the business action independently of which roles currently hold it. This prevents role lists from being repeated and drifting across routes. To add a kitchen role that reads orders only, add kitchen: ['orders:read'] to the permissions table; the existing protected read routes then work without changing their role lists.
+
+TASK 4 — BRANCH AUTHORIZATION AND TESTS
+
+1-3. src/policies/canAccessOrder.js is the single policy used to filter order lists, retrieve an individual order, and validate a payment’s order. Administrators may access all orders; every other role is limited to its verified branch. A cross-branch GET /api/orders/:id returns 404, not 403, to avoid confirming that an order identifier exists in another branch; the tests enforce this. Reports ignore branchId query input and derive the branch from req.user.
+
+4. Test command and output:
+npm test
+PASS tests/api.test.js
+Tests: 16 passed, 16 total
+
+The tests cover no token, bad signature, expiry, non-Bearer authorization, generic login errors, client-claim ignoring, waiter/admin access to admin users, password-hash exclusion, waiter/cashier order creation, cashier payment creation, same- and cross-branch orders, waiter reports denial, query-parameter report isolation, and branch-scoped order lists.
+
+5. Controlled broken-policy evidence: temporarily changing `canAccessOrder` to return `true` caused the cross-branch order test to receive 200 instead of 404 and the branch-scoped order-list test to return all 4 orders instead of 2. The other 14 tests passed during the intentionally broken run. After restoring the policy, `npm test` passed all 16 tests (1 suite passed).
+
+6. .github/workflows/test.yml runs npm ci and npm test on every push and pull request with permissions: contents: read. Tests set a long fictional signing key in process.env before loading config, so no real secret or GitHub Actions secret is required. Green Actions URL: [replace after pushing].
+
+TASK 5 — SECRETS MANAGEMENT
+
+1. src/config.js is the only configuration module for the JWT secret. It throws a named error if JWT_SECRET is absent and refuses values shorter than 32 characters without printing a secret. Running `env -u JWT_SECRET node src/server.js` exited at startup with `Error: Missing required environment variable: JWT_SECRET` (from src/config.js).
+
+2. .env.example contains names and safe placeholders; .env is ignored. `git check-ignore -v .env` returned `.gitignore:2:.env    .env`. `git ls-files | grep env` returned `.env.example`; no real `.env` file is tracked.
+Adding .env to .gitignore would not fix the old repository because Git ignores only untracked files; an already committed file remains tracked and in history.
+
+3. .github/workflows/secrets-check.yml is manually triggered and receives DINEDESK_DEMO_KEY through env, then prints only DINEDESK_DEMO_KEY is configured. Create the invented repository secret, run it, paste the run URL and that log line here, then delete the secret and record that deletion: [replace with evidence].
+
+4. echo "$DINEDESK_DEMO_KEY" leaks the secret directly to logs. Piping it to base64 can leak it because encoding is reversible and masking can be bypassed. Passing it to ./deploy.sh can be safe only if the script and its child processes never log arguments; process listings and debugging can still expose it, so prefer a protected environment/input mechanism. some-user/action@main is risky because a mutable unreviewed third-party action can change after review and receive any secrets passed to it.
+
+5. Incident response: (1) immediately revoke or rotate the payment-provider key; (2) disable/replace related deployment or application configuration; (3) identify exposure scope using Git history, provider logs, and repository clones; (4) remove the value from current code and clean history where appropriate; (5) deploy the replacement through a secret manager; (6) monitor for misuse and document the incident. Revocation is first because a public usable key can be abused immediately; deleting a commit does not remove copies, clones, caches, forks, or history.
+
+6. The payment provider secret key belongs in a server-side environment secret or secrets manager. It cannot be a VITE_ variable because Vite exposes those values to browser JavaScript. The browser asks the DineDesk server to create a provider-approved payment intent/session, then uses the provider’s client-side SDK with a publishable key or ephemeral client secret; the provider secret never enters the browser.
+
+TASK 6 — DESIGN AND REVIEW
+
+1. A user authenticates with a verified short-lived JWT (Module 7). authenticate loads current trusted identity; authorization checks role, named permission, and branch/object policy before the protected route returns data (Module 7, extending secure coding from Module 3). Environment configuration, .gitignore, GitHub Secrets, and secret scanning protect secrets underneath every layer (Modules 2, 6, and 7).
+
+2. A Piassa waiter may create/read Piassa orders but must not read Bole orders or reports. The database API user needs only the tables and SQL operations used by the API, never schema administration or superuser rights. The test CI workflow needs repository contents read and must not receive deployment or provider secrets. The payment provider key should create/manage only this merchant’s server-side payment operations and must not retrieve unrelated provider resources or appear in the browser.
+
+3. In this implementation access stops at the next authenticated request after the account is marked inactive because authenticate loads the current user and checks active. The seed data is in-memory for the assignment, so operational dismissal requires changing the persistent user record; absent that change, the honest token expiry is 15 minutes.
+
+4. Authorization checklist:
+- Authentication enforced before protected routes: yes — authenticate mounted on all /api/orders, /api/payments, /api/reports, and /api/admin routes.
+- Valid signature/algorithm/issuer/audience/expiry: yes — jwt.verify options in middleware and invalid-token tests.
+- Identity not taken from headers/body/query: yes — req.user comes from verified sub and user record.
+- Deny by default: yes — unknown permission role maps to [].
+- Permission checks for actions: yes — requirePermission protects create/read/report/payment routes.
+- Role check for administration: yes — requireRole('admin') and waiter-denial test.
+- Object/tenant scope: yes — canAccessOrder and branch report tests.
+- Sensitive fields excluded: yes — admin route removes passwordHash and test confirms it.
+- Revocation/inactive users: partly represented by active user check; a production implementation needs persistent users and session/revocation storage.
+
+5. Secret scanning first appeared in Module 6, where Gitleaks checked commits in CI. Module 7 extends it by placing secrets behind environment configuration, avoiding client-side exposure, applying least privilege, and defining the response when a secret has already been exposed.
